@@ -9,7 +9,7 @@
  *
  *
  * IDENTIFICATION
- *	  $PostgreSQL: pgsql/src/backend/optimizer/plan/planner.c,v 1.226.2.4 2008/04/17 21:22:23 tgl Exp $
+ *	  $PostgreSQL: pgsql/src/backend/optimizer/plan/planner.c,v 1.234 2008/07/10 02:14:03 tgl Exp $
  *
  *-------------------------------------------------------------------------
  */
@@ -959,6 +959,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 		Assert(root->parse == parse); /* GPDP isn't always careful about this. */
 		SS_finalize_plan(root, plan, true);
 	}
+
 
 	/* Return internal info if caller wants it */
 	if (subroot)
