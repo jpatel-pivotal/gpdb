@@ -179,6 +179,7 @@ static Node *replace_grouping_columns(Node *node,
 									  int end_colno);
 static bool contain_groupingfunc(Node *node);
 static void checkGroupExtensionQuery(CanonicalGroupingSets *cgs, List *targetList);
+static Node *replace_grouping_columns_mutator(Node *node, void *v_cxt);
 
 /**
  * These functions are to be used for debugging purpose only.
@@ -2312,14 +2313,41 @@ plan_list_rollup_plans(PlannerInfo *root,
 	return result_plan;
 }
 
+static Node *
+replace_grouping_columns_targetlist(Node *node, void *grpcol)
+{
+	ListCell *lc = NULL;
+	List*	result_nodes = NIL;
+	
+	if (node == NULL)
+		return NULL;
+
+	Assert(IsA(node, List));
+
+	// Iterate over target list
+	foreach (lc, (List*)node)
+	{
+		TargetEntry *te = copyObject(lfirst(lc));
+		if (equal(te->expr, grpcol)) {
+
+			/* Generate a NULL constant to replace the node. */
+			Const *null = makeNullConst(exprType((Node *)grpcol), -1);
+			te->expr = (Expr*) null;
+		}
+		result_nodes = lappend(result_nodes, te);
+	}
+
+	return (Node*)result_nodes;
+}
+
 /*
  * The context for replacing grouping columns for a given Node
  * with a NULL constant.
  */
 typedef struct ReplaceGroupColsContext
 {
-	/* the grouping columns to be replaced */
-	List *grpcols;
+	/* the grouping column to be replaced */
+	Node *grpcol;
 
 	/*
 	 * A temporary variable to indicate if we are currently
@@ -2331,23 +2359,18 @@ typedef struct ReplaceGroupColsContext
 	bool in_aggref;
 } ReplaceGroupColsContext;
 
-
 static Node *
 replace_grouping_columns_mutator(Node *node, void *v_cxt)
 {
 	ReplaceGroupColsContext *cxt = (ReplaceGroupColsContext *)v_cxt;
-	ListCell *lc = NULL;
+	bool match_found = false;
 	
 	if (node == NULL)
 		return NULL;
 
-	Assert(IsA(cxt->grpcols, List));	
-
-	foreach (lc, cxt->grpcols)
+	if (equal(node, cxt->grpcol))
 	{
-		Node *grpcol = lfirst(lc);
-		if (equal(node, grpcol))
-			break;
+		match_found = true;
 	}
 
 	if (IsA(node, Aggref))
@@ -2366,15 +2389,14 @@ replace_grouping_columns_mutator(Node *node, void *v_cxt)
 		return (Node *)new_aggref;
 	}
 	
-	if (lc != NULL)
+	if (match_found)
 	{
 		/* Generate a NULL constant to replace the node. */
 		Const *null;
-		Node *grpcol = lfirst(lc);
 
 		if (!cxt->in_aggref)
 		{
-			null = makeNullConst(exprType((Node *)grpcol), -1);
+			null = makeNullConst(exprType((Node *)cxt->grpcol), -1);
 			return (Node *)null;
 		}
 	}
@@ -2383,7 +2405,7 @@ replace_grouping_columns_mutator(Node *node, void *v_cxt)
 }
 
 /*
- * Replace grouping columns with NULL constants in the given targetlist.
+ * Replace grouping columns with NULL constants in the given targetlist/quals
  */
 static Node *
 replace_grouping_columns(Node *node,
@@ -2392,9 +2414,10 @@ replace_grouping_columns(Node *node,
 						 int start_colno,
 						 int end_colno)
 {
-	Node *new_node = NULL;
 	int attno;
 	List *grpcols = NIL;
+	Node* result_nodes = NULL;
+	ListCell* lc;
 	ReplaceGroupColsContext cxt;
 
 	Assert(start_colno <= end_colno);
@@ -2403,7 +2426,7 @@ replace_grouping_columns(Node *node,
 		return NULL;
 	
 	/*
-	 * Compute a list of grouping columns to be replaces.
+	 * Compute a list of grouping columns to be replaced
 	 */
 	for (attno = start_colno; attno <= end_colno; attno++)
 	{
@@ -2412,13 +2435,29 @@ replace_grouping_columns(Node *node,
 		grpcols = lappend(grpcols, te->expr);
 	}
 
-	cxt.grpcols = grpcols;
+	Assert(IsA(grpcols, List));
+
 	cxt.in_aggref = false;
-	
-	new_node = replace_grouping_columns_mutator((Node *)node, (void *)&cxt);
+	result_nodes = node;
+
+	foreach(lc, grpcols)
+	{
+		if (IsA(lfirst(lc), Var))
+		{
+			// Traverse the target entry recursively to replace all occurances of this Var by NULL constant
+			cxt.grpcol = lfirst(lc);
+			result_nodes = replace_grouping_columns_mutator(result_nodes, (void *)&cxt);
+		}
+		else
+		{
+			// Do not traverse the target entry recursively; just check the top level node
+			result_nodes = replace_grouping_columns_targetlist(result_nodes, lfirst(lc));
+		}
+	}
+
 	list_free(grpcols);
 
-	return new_node;
+	return result_nodes;
 }
 
 typedef struct qual_context
