@@ -22,6 +22,7 @@
 #include "catalog/pg_type.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_trigger.h"
+#include "catalog/pg_statistic.h"
 #include "optimizer/walkers.h"
 #include "utils/rel.h"
 
@@ -35,6 +36,7 @@
 #include "gpos/string/CWStringDynamic.h"
 #include "gpopt/translate/CTranslatorUtils.h"
 #include "gpopt/translate/CDXLTranslateContext.h"
+#include "gpopt/translate/CTranslatorRelcacheToDXL.h"
 
 #include "naucrates/dxl/CDXLUtils.h"
 #include "naucrates/dxl/xml/dxltokens.h"
@@ -170,6 +172,31 @@ CTranslatorUtils::Pdxltabdesc
 		CMDIdGPDB *pmdidColType = CMDIdGPDB::PmdidConvert(pmdcol->PmdidType());
 		pmdidColType->AddRef();
 
+		IMDType *pmdtype = CTranslatorRelcacheToDXL::Pmdtype(pmp, pmdidColType);
+		ULONG ulWidth = ULONG_MAX;
+
+		if(pmdtype->FFixedLength())
+		{
+			  ulWidth = pmdtype->UlLength();
+		}
+		else
+		{
+			// extract out histogram and mcv information from pg_statistic
+			HeapTuple heaptupleStats = gpdb::HtAttrStats(oidRel, ul+1);
+			if (!HeapTupleIsValid(heaptupleStats))
+			{
+				DOUBLE dWidth = CStatistics::DDefaultColumnWidth.DVal();
+				ulWidth = (ULONG) dWidth;
+			}
+			else
+			{
+				Form_pg_statistic fpsStats = (Form_pg_statistic) GETSTRUCT(heaptupleStats);
+
+				// column width
+				ulWidth = fpsStats->stawidth;
+			}
+		}
+		pmdtype->Release();
 		// create a column descriptor for the column
 		CDXLColDescr *pdxlcd = GPOS_NEW(pmp) CDXLColDescr
 											(
@@ -179,7 +206,7 @@ CTranslatorUtils::Pdxltabdesc
 											pmdcol->IAttno(),
 											pmdidColType,
 											false, /* fColDropped */
-											pmdcol->UlLength()
+											ulWidth
 											);
 		pdxltabdesc->AddColumnDescr(pdxlcd);
 	}
